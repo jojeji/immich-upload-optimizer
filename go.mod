@@ -1,9 +1,9 @@
 module github.com/joojoooo/immich-upload-optimizer
 
-go 1.25.1
+go 1.26.2
 
 require (
-	github.com/andybalholm/brotli v1.2.0
+	github.com/andybalholm/brotli v1.2.1
 	github.com/gorilla/websocket v1.5.3
 	github.com/spf13/viper v1.21.0
 )

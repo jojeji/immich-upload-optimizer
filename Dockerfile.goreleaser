@@ -1,10 +1,10 @@
 FROM debian:sid-slim AS builder
 ENV DEBIAN_FRONTEND=noninteractive
 # Build process inspired by: https://github.com/dooman87/imagemagick-docker/blob/main/Dockerfile.bookworm
-#ARG LIBJXL_VERSION=0.11.1
-ARG LIBAVIF_VERSION=1.3.0
-ARG LIBHEIF_VERSION=1.20.2
-ARG IMAGE_MAGICK_VERSION=7.1.2-8
+#ARG LIBJXL_VERSION=0.11.2
+ARG LIBAVIF_VERSION=1.4.1
+ARG LIBHEIF_VERSION=1.21.2
+ARG IMAGE_MAGICK_VERSION=7.1.2-18
 # Install build dependencies
 RUN apt-get -y update && apt-get install -qq -y --no-install-recommends \
     # Download tools
