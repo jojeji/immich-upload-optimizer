@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -208,7 +209,8 @@ func downloadAndConvertImage(w http.ResponseWriter, r *http.Request, logger *cus
 	if req, err = http.NewRequest("GET", upstreamURL+r.URL.String(), nil); logger.Error(err, "new GET") {
 		return
 	}
-	req.Header = r.Header
+	setHeaders(req.Header, r.Header)
+	req.Header.Del("Range")
 	if resp, err = getHTTPclient().Do(req); logger.Error(err, "getHTTPclient.Do") {
 		return
 	}
@@ -254,6 +256,18 @@ func downloadAndConvertImage(w http.ResponseWriter, r *http.Request, logger *cus
 		return
 	}
 	defer func() { open.Close(); _ = os.Remove(open.Name()) }()
+	// Forward upstream headers without Accept-Ranges and with .jpg filename extension
+	setHeaders(w.Header(), resp.Header)
+	w.Header().Del("Content-Encoding")
+	w.Header().Del("Transfer-Encoding")
+	w.Header().Del("Accept-Ranges")
+	w.Header().Set("Content-Type", "image/jpeg")
+	if cd := w.Header().Get("Content-Disposition"); cd != "" {
+		w.Header().Set("Content-Disposition", cd+".jpg")
+	}
+	if fi, statErr := open.Stat(); statErr == nil {
+		w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
+	}
 	if _, err = io.Copy(w, open); logger.Error(err, "write resp") {
 		return
 	}
