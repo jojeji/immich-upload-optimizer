@@ -5,15 +5,23 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"os"
 	"path"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 var jobIdCounter atomic.Int64
-var jobs sync.Map // map[string]int
+var jobs sync.Map // map[string]*jobEntry
+
+type jobEntry struct {
+	id           int64
+	downloadDone chan struct{}
+	downloadOK   bool
+}
 
 func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error {
 	jobID := jobIdCounter.Add(1)
@@ -59,23 +67,60 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 	}
 	if jobKey == "" {
 		// Never happens, but just in case
+		jobLogger.Print(magenta("no deviceAssetId found in form data, using filename as job key"))
 		jobKey = filePart.FileName()
 	}
 
+	// The iOS app has a bug that randomly stops the 1st upload midway, causing an "unable to save uploaded file: unexpected EOF" error
+	// For this reason, we don't assume a job is a duplicate immediately and instead wait until the full asset is successfully downloaded by the existing job. Not waiting makes the app never upload the asset.
+	// The app "pauses" the upload and no bandwidth is wasted while waiting because the OS slows the TCP connection (since we're not reading from it)
 	jobLogger.Print(yellow("received:") + " \"" + white(filePart.FileName()) + "\" " + yellow("(deviceAssetId: %s)", jobKey))
-	if existingID, loaded := jobs.LoadOrStore(jobKey, jobID); loaded {
-		// Hijack the connection to immediately stop the app from sending more data for this asset (currently the iOS app http client is a bit buggy and stops uploading other unrelated assets too while the Android app only stops this upload)
-		if hj, ok := w.(http.Hijacker); ok {
-			conn, bufrw, err := hj.Hijack()
-			if err == nil {
-				_, _ = bufrw.WriteString("HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nIUO is already processing this asset.\r\n")
-				_ = bufrw.Flush()
-				conn.Close()
+	entry := &jobEntry{
+		id:           jobID,
+		downloadDone: make(chan struct{}),
+	}
+	for {
+		existing, loaded := jobs.LoadOrStore(jobKey, entry)
+		if !loaded {
+			break
+		}
+		existingEntry := existing.(*jobEntry)
+		select {
+		case <-existingEntry.downloadDone:
+		default:
+			jobLogger.Print(yellow("waiting for job %d to finish downloading", existingEntry.id))
+			select {
+			case <-existingEntry.downloadDone:
+			case <-r.Context().Done():
+				return fmt.Errorf("job %d: request cancelled while waiting for duplicate job", jobID)
 			}
 		}
-		return fmt.Errorf("job %d: job %d is already processing this asset", jobID, existingID)
+		if existingEntry.downloadOK {
+			// Existing job downloaded successfully, this is a true duplicate
+			// Hijack the connection to immediately stop the app from sending more data for this asset
+			if hj, ok := w.(http.Hijacker); ok {
+				conn, bufrw, err := hj.Hijack()
+				if err == nil {
+					_, _ = bufrw.WriteString("HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nIUO is already processing this asset\r\n")
+					_ = bufrw.Flush()
+					if tcpConn, ok := conn.(*net.TCPConn); ok {
+						tcpConn.CloseWrite()
+						tcpConn.SetReadDeadline(time.Now().Add(time.Millisecond * 250))
+						io.Copy(io.Discard, tcpConn)
+					}
+					conn.Close()
+				}
+			}
+			return fmt.Errorf("job %d: job %d is already processing this asset", jobID, existingEntry.id)
+		}
+		jobLogger.Print(yellow("job %d download failed, retrying", existingEntry.id))
 	}
-	defer jobs.Delete(jobKey)
+	defer func() {
+		jobs.Delete(jobKey)
+		if !entry.downloadOK {
+			close(entry.downloadDone)
+		}
+	}()
 
 	// Download original file
 	fileName := filePart.FileName()
@@ -91,6 +136,8 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 		return fmt.Errorf("job %d: unable to save uploaded file: %w", jobID, err)
 	}
 	filePart.Close()
+	entry.downloadOK = true
+	close(entry.downloadDone)
 	jobLogger.Print(green("downloaded:") + " \"" + white(fileName) + "\" " + green("(%s)", humanReadableSize(fileSize)))
 	// Read any remaining form fields after the file
 	for {
