@@ -50,11 +50,11 @@ func NewConfig(configFile *string) (*Config, error) {
 	viper.SetConfigFile(*configFile)
 
 	if err := viper.ReadInConfig(); err != nil {
-		log.Fatalf("Error reading config file: %v", err)
+		log.Fatal(red("Error reading config file: %v", err))
 	}
 
 	if err := viper.Unmarshal(&c); err != nil {
-		log.Fatalf("Error unmarshaling config: %v", err)
+		log.Fatal(red("Error unmarshaling config: %v", err))
 	}
 
 	for i := range c.Tasks {

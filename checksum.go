@@ -44,7 +44,7 @@ func initChecksums() {
 		fakeToOriginalChecksum[kv[0]] = kv[1]
 	}
 	if err := scanner.Err(); err != nil {
-		fmt.Println("Error reading csv:", err)
+		fmt.Println(red("Error reading csv: %v", err))
 	}
 }
 

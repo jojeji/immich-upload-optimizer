@@ -108,22 +108,22 @@ func printVersion() string {
 
 func validateInput() {
 	if upstreamURL == "" {
-		log.Fatal("the -upstream flag is required")
+		log.Fatal(red("the -upstream flag is required"))
 	}
 
 	var err error
 	remote, err = url.Parse(upstreamURL)
 	if err != nil {
-		log.Fatalf("invalid upstream URL: %v", err)
+		log.Fatal(red("invalid upstream URL: %v", err))
 	}
 
 	if configFile == "" {
-		log.Fatal("the -tasks_file flag is required")
+		log.Fatal(red("the -tasks_file flag is required"))
 	}
 
 	config, err = NewConfig(&configFile)
 	if err != nil {
-		log.Fatalf("error loading config file: %v", err)
+		log.Fatal(red("error loading config file: %v", err))
 	}
 }
 

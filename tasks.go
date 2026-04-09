@@ -30,7 +30,7 @@ type TaskProcessor struct {
 	logger *customLogger
 }
 
-func NewTaskProcessor(file *os.File, fileName string, fileSize int64) (*TaskProcessor, error) {
+func NewTaskProcessor(file *os.File, fileName string, fileSize int64, logger *customLogger) (*TaskProcessor, error) {
 	originalExtension := path.Ext(fileName)
 	if !isValidFilename(originalExtension) {
 		return nil, fmt.Errorf("invalid file extension: %s", originalExtension)
@@ -60,17 +60,8 @@ func NewTaskProcessor(file *os.File, fileName string, fileSize int64) (*TaskProc
 		OriginalExtension:    originalExtension,
 		OriginalSize:         fileSize,
 		tempOriginalFilePath: file.Name(),
+		logger:               logger,
 	}, nil
-}
-
-func (tp *TaskProcessor) SetLogger(logger *customLogger) {
-	tp.logger = logger
-}
-
-func (tp *TaskProcessor) logf(str string, args ...interface{}) {
-	if tp.logger != nil {
-		tp.logger.Printf(str, args...)
-	}
 }
 
 func (tp *TaskProcessor) Close() error {
@@ -82,7 +73,7 @@ func (tp *TaskProcessor) CleanOriginalFile() (err error) {
 	if tp.OriginalFile != nil {
 		err = tp.OriginalFile.Close()
 		if err != nil {
-			tp.logf("unable to close original file: %v", err)
+			tp.logger.Print(red("unable to close original file: %v", err))
 		}
 		tp.OriginalFile = nil
 	}
@@ -90,7 +81,7 @@ func (tp *TaskProcessor) CleanOriginalFile() (err error) {
 	if tp.tempOriginalFilePath != "" {
 		err = os.Remove(tp.tempOriginalFilePath)
 		if err != nil {
-			tp.logf("unable to remove temp file: %v", err)
+			tp.logger.Print(red("unable to remove temp file: %v", err))
 		}
 		tp.tempOriginalFilePath = ""
 	}
@@ -103,7 +94,7 @@ func (tp *TaskProcessor) CleanWorkDir() error {
 	}
 	err := os.RemoveAll(tp.tempWorkDir)
 	if err != nil {
-		tp.logf("unable to clean temp folder: %v", err)
+		tp.logger.Print(red("unable to clean temp folder: %v", err))
 	}
 	tp.tempWorkDir = ""
 	return err
@@ -140,7 +131,7 @@ func (tp *TaskProcessor) Run() error {
 	if err != nil {
 		return fmt.Errorf("unable to generate command to be Run: %w", err)
 	}
-	tp.logf("running task: %s: %s", tp.Task.Name, cmdLine.String())
+	tp.logger.Print(cyan("running task: %s: %s", tp.Task.Name, cmdLine.String()))
 	cmd := exec.Command("sh", "-c", cmdLine.String())
 	cmd.Dir = path.Dir(configFile)
 	output, err := cmd.CombinedOutput()

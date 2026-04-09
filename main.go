@@ -94,18 +94,18 @@ var DevMITMproxy = version == "dev"
 
 func main() {
 	baseLogger = log.New(os.Stdout, "", log.Ldate|log.Ltime)
-	log.Printf("Starting %s on %s...", printVersion(), listenAddr)
+	log.Print(green("Starting %s on %s...", printVersion(), listenAddr))
 	tmpDir := os.Getenv("TMPDIR")
 	if tmpDir != "" {
 		info, err := os.Stat(tmpDir)
 		if err == nil && info.IsDir() {
-			log.Printf("tmp directory: %s", tmpDir)
+			log.Print(cyan("tmp directory: %s", tmpDir))
 			_ = removeAllContents(tmpDir)
 		} else {
 			panic("TMPDIR must be a directory")
 		}
 	} else {
-		log.Printf("no tmp directory set, uploaded files will be saved on disk multiple times, this can shorten your disk lifespan !")
+		log.Print(yellow("no tmp directory set, uploaded files will be saved on disk, this will shorten your disk lifespan!"))
 	}
 	// Proxy
 	proxy = httputil.NewSingleHostReverseProxy(remote)
@@ -115,7 +115,7 @@ func main() {
 	}
 	server := &http.Server{Addr: listenAddr, Handler: http.HandlerFunc(handleRequest)}
 	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("Error starting immich-upload-optimizer: %v", err)
+		log.Fatal(red("Error starting immich-upload-optimizer: %v", err))
 	}
 }
 
@@ -144,7 +144,7 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		break
 	case isAssetsUpload(r):
 		err = newJob(r, w, logger)
-		logger.SetErrPrefix("upload")
+		logger.SetErrPrefix("job err")
 		logger.Error(err, "")
 		return
 	default:
@@ -250,7 +250,7 @@ func downloadAndConvertImage(w http.ResponseWriter, r *http.Request, logger *cus
 	default:
 		return errors.New("should never happen")
 	}
-	logger.Printf("conversion complete: %s", strings.ReplaceAll(string(output), "\n", " - "))
+	logger.Print(green("conversion complete: %s", strings.ReplaceAll(string(output), "\n", " - ")))
 	cleanupBlob()
 	if open, err = os.Open(blob.Name() + ".jpg"); logger.Error(err, "open jpg") {
 		return

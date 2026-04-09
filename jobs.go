@@ -22,7 +22,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 	// Use streaming multipart reader to read form fields before the file. This allows checking for duplicate jobs before downloading the full asset data.
 	mr, err := r.MultipartReader()
 	if err != nil {
-		return fmt.Errorf("unable to create multipart reader: %w", err)
+		return fmt.Errorf("job %d: unable to create multipart reader: %w", jobID, err)
 	}
 
 	formValues := make(map[string][]string)
@@ -33,7 +33,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("unable to read multipart part: %w", err)
+			return fmt.Errorf("job %d: unable to read multipart part: %w", jobID, err)
 		}
 		if part.FileName() != "" {
 			filePart = part
@@ -43,12 +43,12 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 		value, err := io.ReadAll(part)
 		part.Close()
 		if err != nil {
-			return fmt.Errorf("unable to read form field %s: %w", fieldName, err)
+			return fmt.Errorf("job %d: unable to read form field %s: %w", jobID, fieldName, err)
 		}
 		formValues[fieldName] = append(formValues[fieldName], string(value))
 	}
 	if filePart == nil {
-		return fmt.Errorf("no file found in multipart form data")
+		return fmt.Errorf("job %d: no file found in multipart form data", jobID)
 	}
 	defer filePart.Close()
 
@@ -62,7 +62,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 		jobKey = filePart.FileName()
 	}
 
-	jobLogger.Printf("received: \"%s\" (deviceAssetId: %s)", filePart.FileName(), jobKey)
+	jobLogger.Print(yellow("received:") + " \"" + white(filePart.FileName()) + "\" " + yellow("(deviceAssetId: %s)", jobKey))
 	if existingID, loaded := jobs.LoadOrStore(jobKey, jobID); loaded {
 		// Hijack the connection to immediately stop the app from sending more data for this asset (currently the iOS app http client is a bit buggy and stops uploading other unrelated assets too while the Android app only stops this upload)
 		if hj, ok := w.(http.Hijacker); ok {
@@ -73,7 +73,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 				conn.Close()
 			}
 		}
-		return fmt.Errorf("a job processing this file already exists with ID: %d", existingID)
+		return fmt.Errorf("job %d: job %d is already processing this asset", jobID, existingID)
 	}
 	defer jobs.Delete(jobKey)
 
@@ -81,17 +81,17 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 	fileName := filePart.FileName()
 	tmpFile, err := os.CreateTemp("", "upload-*"+path.Ext(fileName))
 	if err != nil {
-		return fmt.Errorf("unable to create temp file: %w", err)
+		return fmt.Errorf("job %d: unable to create temp file: %w", jobID, err)
 	}
 	defer os.Remove(tmpFile.Name())
 	defer tmpFile.Close()
 
 	fileSize, err := io.Copy(tmpFile, filePart)
 	if err != nil {
-		return fmt.Errorf("unable to save uploaded file: %w", err)
+		return fmt.Errorf("job %d: unable to save uploaded file: %w", jobID, err)
 	}
 	filePart.Close()
-	jobLogger.Printf("download original: \"%s\" (%s)", fileName, humanReadableSize(fileSize))
+	jobLogger.Print(green("downloaded:") + " \"" + white(fileName) + "\" " + green("(%s)", humanReadableSize(fileSize)))
 	// Read any remaining form fields after the file
 	for {
 		part, err := mr.NextPart()
@@ -109,7 +109,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 	}
 
 	if _, err = tmpFile.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("unable to seek temp file: %w", err)
+		return fmt.Errorf("job %d: unable to seek temp file: %w", jobID, err)
 	}
 
 	var originalHash string
@@ -118,12 +118,11 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 	uploadFilename := fileName
 	uploadOriginal := true
 
-	taskProcessor, err := NewTaskProcessor(tmpFile, fileName, fileSize)
+	taskProcessor, err := NewTaskProcessor(tmpFile, fileName, fileSize, jobLogger)
 	if err == nil && taskProcessor != nil {
 		defer taskProcessor.Close()
-		taskProcessor.SetLogger(jobLogger)
 		if err = taskProcessor.Run(); err != nil {
-			return fmt.Errorf("failed to process file in job %d: %v", jobID, err.Error())
+			return fmt.Errorf("job %d: failed to process file: %v", jobID, err.Error())
 		}
 		if taskProcessor.OriginalSize <= taskProcessor.ProcessedSize {
 			uploadFile = taskProcessor.OriginalFile
@@ -133,7 +132,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 			uploadFilename = taskProcessor.ProcessedFilename
 			uploadOriginal = false
 			if originalHash, err = SHA1(taskProcessor.OriginalFile); err != nil {
-				return fmt.Errorf("sha1: %w", err)
+				return fmt.Errorf("job %d: sha1: %w", jobID, err)
 			}
 			_ = taskProcessor.CleanOriginalFile() // Save RAM before upload (tmpfs)
 		}
@@ -141,18 +140,17 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 	// Upload the original file or processed one if a task was found
 	err = uploadUpstream(w, r, uploadFile, uploadFilename, formValues)
 	if err != nil {
-		jobLogger.Printf("upload upstream error: %s", err.Error())
 		http.Error(w, "failed to process file, view IUO logs for more info", http.StatusInternalServerError)
-		return err
+		return fmt.Errorf("job %d: upload upstream: %w", jobID, err)
 	}
 	if uploadOriginal {
-		jobLogger.Printf("uploaded original: \"%s\" (%s)", fileName, humanReadableSize(fileSize))
+		jobLogger.Print(greenBold("uploaded original:") + " \"" + white(fileName) + "\" " + greenBold("(%s)", humanReadableSize(fileSize)))
 	} else {
 		if newHash, err = SHA1(taskProcessor.ProcessedFile); err != nil {
-			return fmt.Errorf("new sha1: %w", err)
+			return fmt.Errorf("job %d: new sha1: %w", jobID, err)
 		}
 		addChecksums(newHash, originalHash)
-		jobLogger.Printf("uploaded: \"%s\" (%s) <- (%s) \"%s\"", taskProcessor.ProcessedFilename, humanReadableSize(taskProcessor.ProcessedSize), humanReadableSize(taskProcessor.OriginalSize), taskProcessor.OriginalFilename)
+		jobLogger.Print(greenBold("uploaded:") + " \"" + white(taskProcessor.ProcessedFilename) + "\" " + greenBold("(%s) <- (%s)", humanReadableSize(taskProcessor.ProcessedSize), humanReadableSize(taskProcessor.OriginalSize)) + " \"" + white(taskProcessor.OriginalFilename) + "\"")
 	}
 
 	return nil
