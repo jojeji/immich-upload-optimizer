@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -155,12 +157,43 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 		}
 	}
 
+	// Skip this asset if the optimized version is already on the Immich server.
+	// This is a safety net to guarantee no duplicate ever reaches the server if clients fail to check themselves before uploading.
+	originalHash := ""
+	if originalHash, err = SHA1(tmpFile); err != nil {
+		return fmt.Errorf("job %d: sha1 original: %w", jobID, err)
+	}
+	mapLock.RLock()
+	fakeHash, hasFake := originalToFakeChecksum[originalHash]
+	mapLock.RUnlock()
+	if hasFake {
+		checkBody, _ := json.Marshal(bulkUploadCheckRequest{Assets: []bulkUploadCheckItem{{ID: fmt.Sprintf("job%d", jobID), Checksum: fakeHash}}})
+		checkReq, err := http.NewRequest("POST", upstreamURL+"/api/assets/bulk-upload-check", bytes.NewReader(checkBody))
+		if err == nil {
+			checkReq.Header = r.Header.Clone()
+			checkReq.Header.Set("Content-Type", "application/json")
+			resp, err := getHTTPclient().Do(checkReq)
+			if err == nil {
+				var checkResp bulkUploadCheckResponse
+				if err := json.NewDecoder(resp.Body).Decode(&checkResp); err == nil {
+					if len(checkResp.Results) > 0 && checkResp.Results[0].Action == "reject" && checkResp.Results[0].ID == fmt.Sprintf("job%d", jobID) {
+						resp.Body.Close()
+						jobLogger.Print(yellow("skipped:") + " \"" + white(fileName) + "\" " + yellow("(optimized version already on the immich server)"))
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusOK)
+						json.NewEncoder(w).Encode(assetMediaResponse{ID: checkResp.Results[0].AssetID, Status: "duplicate"})
+						return nil
+					}
+				}
+				resp.Body.Close()
+			}
+		}
+	}
+
 	if _, err = tmpFile.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("job %d: unable to seek temp file: %w", jobID, err)
 	}
 
-	var originalHash string
-	var newHash string
 	uploadFile := io.ReadSeeker(tmpFile)
 	uploadFilename := fileName
 	uploadOriginal := true
@@ -178,9 +211,6 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 			uploadFile = taskProcessor.ProcessedFile
 			uploadFilename = taskProcessor.ProcessedFilename
 			uploadOriginal = false
-			if originalHash, err = SHA1(taskProcessor.OriginalFile); err != nil {
-				return fmt.Errorf("job %d: sha1: %w", jobID, err)
-			}
 			_ = taskProcessor.CleanOriginalFile() // Save RAM before upload (tmpfs)
 		}
 	}
@@ -193,11 +223,12 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 	if uploadOriginal {
 		jobLogger.Print(greenBold("uploaded original:") + " \"" + white(fileName) + "\" " + greenBold("(%s)", humanReadableSize(fileSize)))
 	} else {
-		if newHash, err = SHA1(taskProcessor.ProcessedFile); err != nil {
+		if newHash, err := SHA1(taskProcessor.ProcessedFile); err == nil {
+			addChecksums(newHash, originalHash)
+			jobLogger.Print(greenBold("uploaded:") + " \"" + white(taskProcessor.ProcessedFilename) + "\" " + greenBold("(%s) <- (%s)", humanReadableSize(taskProcessor.ProcessedSize), humanReadableSize(taskProcessor.OriginalSize)) + " \"" + white(taskProcessor.OriginalFilename) + "\"")
+		} else {
 			return fmt.Errorf("job %d: new sha1: %w", jobID, err)
 		}
-		addChecksums(newHash, originalHash)
-		jobLogger.Print(greenBold("uploaded:") + " \"" + white(taskProcessor.ProcessedFilename) + "\" " + greenBold("(%s) <- (%s)", humanReadableSize(taskProcessor.ProcessedSize), humanReadableSize(taskProcessor.OriginalSize)) + " \"" + white(taskProcessor.OriginalFilename) + "\"")
 	}
 
 	return nil

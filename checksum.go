@@ -127,6 +127,21 @@ type bulkUploadCheckRequest struct {
 	Assets []bulkUploadCheckItem `json:"assets"`
 }
 
+type bulkUploadCheckResult struct {
+	ID      string `json:"id"`
+	Action  string `json:"action"`
+	AssetID string `json:"assetId"`
+}
+
+type bulkUploadCheckResponse struct {
+	Results []bulkUploadCheckResult `json:"results"`
+}
+
+type assetMediaResponse struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
 func replaceBulkUploadCheck(w http.ResponseWriter, r *http.Request, logger *customLogger) error {
 	logger.SetErrPrefix("bulk-upload-check")
 	var err error
