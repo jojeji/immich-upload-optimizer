@@ -94,6 +94,7 @@ RUN apt-get -y update && apt-get install -qq -y --no-install-recommends \
     # libheif deps
     x265 \
     libde265-0 \
+    libwebm1 \
     # libavif deps
     libaom3 \
     libyuv0 \
