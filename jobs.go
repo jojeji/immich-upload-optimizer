@@ -11,9 +11,12 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"slices"
 )
 
 var jobIdCounter atomic.Int64
@@ -25,6 +28,26 @@ type jobEntry struct {
 	downloadOK   bool
 }
 
+func describeUploadTask(fileName string, fileSize int64) (*Task, string) {
+	originalExtension := path.Ext(fileName)
+	if !isValidFilename(originalExtension) {
+		return nil, fmt.Sprintf("invalid file extension: %s", originalExtension)
+	}
+
+	checkExt := strings.ToLower(strings.TrimPrefix(originalExtension, "."))
+	for _, task := range config.Tasks {
+		if !slices.Contains(task.Extensions, checkExt) {
+			continue
+		}
+		if fileSize < task.MinFilesizeBytes {
+			return nil, fmt.Sprintf("task=%s too small: %d < %d", task.Name, fileSize, task.MinFilesizeBytes)
+		}
+		return task, ""
+	}
+
+	return nil, fmt.Sprintf("no task found for file extension .%s", checkExt)
+}
+
 func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error {
 	jobID := jobIdCounter.Add(1)
 	jobLogger := newCustomLogger(logger, fmt.Sprintf("job %d: ", jobID))
@@ -34,6 +57,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 	if err != nil {
 		return fmt.Errorf("job %d: unable to create multipart reader: %w", jobID, err)
 	}
+	jobLogger.Print(cyan("multipart reader ready"))
 
 	formValues := make(map[string][]string)
 	var filePart *multipart.Part
@@ -60,6 +84,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 	if filePart == nil {
 		return fmt.Errorf("job %d: no file found in multipart form data", jobID)
 	}
+	jobLogger.Printf(cyan("first file part: %q"), filePart.FileName())
 	defer filePart.Close()
 
 	// Check for duplicate job using deviceAssetId+filename before downloading the file.
@@ -69,10 +94,6 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 		deviceAssetId = ids[0]
 	}
 	if deviceAssetId == "" {
-		// deviceAssetId is already removed in this PR
-		// https://github.com/immich-app/immich/issues/27818
-		// and marked here to be removed: https://github.com/immich-app/immich/blob/b414b3d32b3952eb6f655d60b91240614be14acc/mobile/lib/services/foreground_upload.service.dart#L323
-		// ToDo: Need to use an alternative, because file name only is not "secure" enough
 		jobLogger.Print(magenta("no deviceAssetId found in form data, using filename only as job key"))
 	}
 	jobKey := deviceAssetId + "|" + filePart.FileName()
@@ -80,7 +101,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 	// The iOS app has a bug that randomly stops the 1st upload midway, causing an "unable to save uploaded file: unexpected EOF" error
 	// For this reason, we don't assume a job is a duplicate immediately and instead wait until the full asset is successfully downloaded by the existing job. Not waiting makes the app never upload the asset.
 	// The app "pauses" the upload and no bandwidth is wasted while waiting because the OS slows the TCP connection (since we're not reading from it)
-	jobLogger.Print(yellow("received:") + " \"" + white(filePart.FileName()) + "\" " + yellow("(deviceAssetId: %s)", jobKey))
+	jobLogger.Printf(yellow("received:")+" \""+white(filePart.FileName())+"\" "+yellow("(deviceAssetId: %s)"), jobKey)
 	entry := &jobEntry{
 		id:           jobID,
 		downloadDone: make(chan struct{}),
@@ -94,7 +115,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 		select {
 		case <-existingEntry.downloadDone:
 		default:
-			jobLogger.Print(yellow("waiting for job %d to finish downloading", existingEntry.id))
+			jobLogger.Printf(yellow("waiting for job %d to finish downloading"), existingEntry.id)
 			select {
 			case <-existingEntry.downloadDone:
 			case <-r.Context().Done():
@@ -119,7 +140,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 			}
 			return fmt.Errorf("job %d: job %d is already processing this asset", jobID, existingEntry.id)
 		}
-		jobLogger.Print(yellow("job %d download failed, retrying", existingEntry.id))
+		jobLogger.Printf(yellow("job %d download failed, retrying"), existingEntry.id)
 	}
 	defer func() {
 		jobs.Delete(jobKey)
@@ -144,7 +165,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 	filePart.Close()
 	entry.downloadOK = true
 	close(entry.downloadDone)
-	jobLogger.Print(green("downloaded:") + " \"" + white(fileName) + "\" " + green("(%s)", humanReadableSize(fileSize)))
+	jobLogger.Printf(green("downloaded:")+" \""+white(fileName)+"\" "+green("(%s)"), humanReadableSize(fileSize))
 	// Read any remaining form fields after the file
 	for {
 		part, err := mr.NextPart()
@@ -159,6 +180,12 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 		} else {
 			part.Close()
 		}
+	}
+	jobLogger.Printf(cyan("form fields collected: %d"), len(formValues))
+	if task, reason := describeUploadTask(fileName, fileSize); task != nil {
+		jobLogger.Printf(cyan("task selection: file=%q size=%s extension=%q matched=%q"), fileName, humanReadableSize(fileSize), strings.ToLower(strings.TrimPrefix(path.Ext(fileName), ".")), task.Name)
+	} else {
+		jobLogger.Printf(cyan("task selection: file=%q size=%s extension=%q %s"), fileName, humanReadableSize(fileSize), strings.ToLower(strings.TrimPrefix(path.Ext(fileName), ".")), reason)
 	}
 
 	// Skip this asset if the optimized version is already on the Immich server.
@@ -205,21 +232,24 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 	taskProcessor, err := NewTaskProcessor(tmpFile, fileName, fileSize, jobLogger)
 	if err == nil && taskProcessor != nil {
 		defer taskProcessor.Close()
+		jobLogger.Printf(cyan("task processor starting: %s"), taskProcessor.Task.Name)
 		if err = taskProcessor.Run(); err != nil {
 			return fmt.Errorf("job %d: failed to process file: %v", jobID, err.Error())
 		}
 		if taskProcessor.OriginalSize <= taskProcessor.ProcessedSize {
 			uploadFile = taskProcessor.OriginalFile
 			_ = taskProcessor.CleanWorkDir() // Save RAM before upload (tmpfs)
+			jobLogger.Printf(cyan("task result: keeping original because processed file is not smaller (%s <= %s)"), humanReadableSize(taskProcessor.OriginalSize), humanReadableSize(taskProcessor.ProcessedSize))
 		} else {
 			uploadFile = taskProcessor.ProcessedFile
 			uploadFilename = taskProcessor.ProcessedFilename
 			uploadOriginal = false
 			_ = taskProcessor.CleanOriginalFile() // Save RAM before upload (tmpfs)
+			jobLogger.Printf(cyan("task result: using processed file (%s < %s)"), humanReadableSize(taskProcessor.ProcessedSize), humanReadableSize(taskProcessor.OriginalSize))
 		}
 	}
 	// Upload the original file or processed one if a task was found
-	err = uploadUpstream(w, r, uploadFile, uploadFilename, formValues)
+	err = uploadUpstream(w, r, uploadFile, uploadFilename, formValues, jobLogger)
 	if err != nil {
 		http.Error(w, "failed to process file, view IUO logs for more info", http.StatusConflict)
 		return fmt.Errorf("job %d: upload upstream: %w", jobID, err)
@@ -238,7 +268,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 	return nil
 }
 
-func uploadUpstream(w http.ResponseWriter, r *http.Request, file io.ReadSeeker, name string, formValues map[string][]string) (err error) {
+func uploadUpstream(w http.ResponseWriter, r *http.Request, file io.ReadSeeker, name string, formValues map[string][]string, logger *customLogger) (err error) {
 	pipeReader, pipeWriter := io.Pipe()
 	defer pipeReader.Close()
 	multipartWriter := multipart.NewWriter(pipeWriter)
@@ -293,6 +323,7 @@ func uploadUpstream(w http.ResponseWriter, r *http.Request, file io.ReadSeeker, 
 	}
 	req.Header = r.Header
 	req.Header.Set("Content-Type", multipartWriter.FormDataContentType())
+	logger.Printf(cyan("upload upstream request: header-content-length=%q header-transfer-encoding=%q req-content-length=%d content-type=%q headers=%d"), req.Header.Get("Content-Length"), req.Header.Get("Transfer-Encoding"), req.ContentLength, req.Header.Get("Content-Type"), len(req.Header))
 	// Send the request to the upstream server
 	resp, err := getHTTPclient().Do(req)
 	if err != nil {
@@ -306,7 +337,7 @@ func uploadUpstream(w http.ResponseWriter, r *http.Request, file io.ReadSeeker, 
 		return fmt.Errorf("unable to POST: %w", err)
 	}
 	defer resp.Body.Close()
-	// Send immich response back to client
+	logger.Printf(cyan("upload upstream response: status=%d content-length=%q content-encoding=%q"), resp.StatusCode, resp.Header.Get("Content-Length"), resp.Header.Get("Content-Encoding"))
 	setHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, err = io.Copy(w, resp.Body)

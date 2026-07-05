@@ -147,12 +147,7 @@ func removeAllContents(dir string) error {
 }
 
 func getHTTPclient() (client *http.Client) {
-	if DevMITMproxy {
-		client = &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyUrl)}}
-	} else {
-		client = &http.Client{}
-	}
-	return
+	return &http.Client{}
 }
 
 func setHeaders(h1, h2 http.Header) {

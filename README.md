@@ -1,4 +1,4 @@
-# Immich Upload Optimizer [![goreleaser](https://github.com/joojoooo/immich-upload-optimizer/actions/workflows/release.yaml/badge.svg)](https://github.com/joojoooo/immich-upload-optimizer/actions/workflows/release.yaml)
+# Immich Upload Optimizer [![goreleaser](https://github.com/jojeji/immich-upload-optimizer/actions/workflows/release.yaml/badge.svg)](https://github.com/jojeji/immich-upload-optimizer/actions/workflows/release.yaml)
 Immich Upload Optimizer (IOU) is a proxy designed to be placed in front of the [Immich](https://immich.app/) server. It intercepts file uploads and uses external CLI programs (by default: [AVIF](https://aomediacodec.github.io/av1-avif/), [JPEG-XL](https://jpegxl.info/), [FFmpeg](https://www.ffmpeg.org/)) to optimize, resize, or compress images and videos to save storage space
 
 ## ☕  Support the project
@@ -40,7 +40,7 @@ Edit your Immich Docker Compose file:
 ```yaml
 services:
   immich-upload-optimizer:
-    image: ghcr.io/joojoooo/immich-upload-optimizer:latest
+    image: ghcr.io/jojeji/immich-upload-optimizer:latest
     tmpfs:
       - /tempfs
     ports:

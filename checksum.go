@@ -45,7 +45,9 @@ func initChecksums() {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		kv := strings.Split(scanner.Text(), ",")
-		setChecksumPair(kv[0], kv[1])
+		if len(kv) == 2 {
+			setChecksumPair(kv[0], kv[1])
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		fmt.Println(red("Error reading csv: %v", err))
@@ -96,7 +98,6 @@ func appendToCSV(key, value string) error {
 
 type Asset map[string]any
 
-// toOriginalAsset: Must acquire mapLock.RLock() before calling
 func (asset Asset) toOriginalAsset() {
 	if downloadJpgFromJxl || downloadJpgFromAvif {
 		if n, ok := asset["originalFileName"]; ok {
@@ -111,7 +112,6 @@ func (asset Asset) toOriginalAsset() {
 	if c, ok := asset["checksum"]; ok {
 		if checksum, ok := c.(string); ok {
 			if original, ok := fakeToOriginalChecksum[checksum]; ok {
-				//fmt.Printf("checksum: %s -> %s\n", checksum, original)
 				asset["checksum"] = original
 			}
 		}
@@ -187,13 +187,13 @@ func replaceBulkUploadCheck(w http.ResponseWriter, r *http.Request, logger *cust
 
 func getChecksumReplacer(w http.ResponseWriter, r *http.Request, logger *customLogger) *Replacer {
 	if isStreamSync(r) {
-		return &Replacer{w, r, logger, TypeStream}
+		return &Replacer{w: w, r: r, logger: logger, typeId: TypeStream}
 	}
 	if isFullSync(r) {
-		return &Replacer{w, r, logger, TypeFull}
+		return &Replacer{w: w, r: r, logger: logger, typeId: TypeFull}
 	}
 	if isDeltaSync(r) {
-		return &Replacer{w, r, logger, TypeDelta}
+		return &Replacer{w: w, r: r, logger: logger, typeId: TypeDelta}
 	}
 	/*
 		Since immich server v1.133.1
@@ -201,7 +201,7 @@ func getChecksumReplacer(w http.ResponseWriter, r *http.Request, logger *customL
 		- Buckets don't hold assets anymore
 	*/
 	if isAlbum(r) {
-		return &Replacer{w, r, logger, TypeAlbum}
+		return &Replacer{w: w, r: r, logger: logger, typeId: TypeAlbum}
 	}
 	/*
 		if isBucket(r) {
@@ -209,7 +209,7 @@ func getChecksumReplacer(w http.ResponseWriter, r *http.Request, logger *customL
 		}
 	*/
 	if isAssetView(r) {
-		return &Replacer{w, r, logger, TypeAssetView}
+		return &Replacer{w: w, r: r, logger: logger, typeId: TypeAssetView}
 	}
 	return nil
 }
@@ -295,13 +295,13 @@ func (replacer Replacer) Replace() (err error) {
 					continue
 				}
 				if assets, ok := value.([]any); ok {
-					mapLock.RLock()
 					for _, a := range assets {
 						if asset, ok := a.(map[string]any); ok {
+							mapLock.RLock()
 							Asset(asset).toOriginalAsset()
+							mapLock.RUnlock()
 						}
 					}
-					mapLock.RUnlock()
 				}
 				break
 			}
@@ -315,11 +315,11 @@ func (replacer Replacer) Replace() (err error) {
 			if err = json.Unmarshal(jsonBuf, &assets); logger.Error(err, "json unmarshal") {
 				return
 			}
-			mapLock.RLock()
 			for _, asset := range assets {
+				mapLock.RLock()
 				asset.toOriginalAsset()
+				mapLock.RUnlock()
 			}
-			mapLock.RUnlock()
 			if jsonBuf, err = json.Marshal(assets); logger.Error(err, "json marshal") {
 				return
 			}
@@ -342,6 +342,8 @@ func (replacer Replacer) Replace() (err error) {
 	setHeaders(w.Header(), resp.Header)
 	if !slices.Contains([]string{"gzip", "br"}, resp.Header.Get("Content-Encoding")) {
 		w.Header().Set("Content-Length", strconv.Itoa(len(jsonBuf)))
+	} else {
+		w.Header().Del("Content-Length")
 	}
 	w.WriteHeader(resp.StatusCode)
 	if _, err = bodyWriter.Write(jsonBuf); logger.Error(err, "resp write") {

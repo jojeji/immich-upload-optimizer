@@ -26,7 +26,6 @@ var commit = "none"
 var date = "unknown"
 
 var remote *url.URL
-var proxyUrl *url.URL
 
 var maxImageJobs uint
 var maxVideoJobs uint
@@ -89,7 +88,6 @@ func init() {
 
 	validateInput()
 
-	proxyUrl, _ = url.Parse("http://localhost:8080")
 	imageSemaphore = make(chan struct{}, maxImageJobs)
 	videoSemaphore = make(chan struct{}, maxVideoJobs)
 	initChecksums()
@@ -97,9 +95,6 @@ func init() {
 
 var baseLogger *log.Logger
 var proxy *httputil.ReverseProxy
-
-// DevMITMproxy Used for development, version gets automatically replaced by goreleaser, making this false
-var DevMITMproxy = version == "dev"
 
 func main() {
 	baseLogger = log.New(os.Stdout, "", log.Ldate|log.Ltime)
@@ -118,10 +113,6 @@ func main() {
 	}
 	// Proxy
 	proxy = httputil.NewSingleHostReverseProxy(remote)
-	if DevMITMproxy {
-		proxy.Transport = http.DefaultTransport
-		proxy.Transport.(*http.Transport).Proxy = http.ProxyURL(proxyUrl)
-	}
 	server := &http.Server{Addr: listenAddr, Handler: http.HandlerFunc(handleRequest)}
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(red("Error starting immich-upload-optimizer: %v", err))
@@ -131,6 +122,24 @@ func main() {
 func handleRequest(w http.ResponseWriter, r *http.Request) {
 	var err error
 	logger := newCustomLogger(baseLogger, fmt.Sprintf("%s: ", strings.Split(r.RemoteAddr, ":")[0]))
+	route := "passthrough"
+	switch {
+	case strings.ToLower(r.Header.Get("Upgrade")) == "websocket":
+		route = "websocket"
+	case isAssetsUpload(r):
+		route = "upload"
+	case isBulkUploadCheck(r):
+		route = "bulk-upload-check"
+	case downloadJpgFromJxl || downloadJpgFromAvif:
+		if ok, _ := isOriginalDownloadPath(r); ok {
+			route = "download-convert"
+		}
+	default:
+		if replacer := getChecksumReplacer(w, r, logger); replacer != nil {
+			route = fmt.Sprintf("replacer-%d", replacer.typeId)
+		}
+	}
+	logger.Printf("request method=%s path=%s content-type=%q route=%s", r.Method, r.URL.Path, r.Header.Get("Content-Type"), route)
 	if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
 		upgradeWebSocketRequest(w, r, logger)
 		return
