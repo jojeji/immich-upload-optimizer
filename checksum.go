@@ -142,6 +142,25 @@ type assetMediaResponse struct {
 	Status string `json:"status"`
 }
 
+var checksumRewriteStreamTypes = []string{
+	"AssetV1",
+	"AssetV2",
+	"AlbumAssetCreateV1",
+	"AlbumAssetCreateV2",
+	"AlbumAssetUpdateV1",
+	"AlbumAssetUpdateV2",
+	"AlbumAssetBackfillV1",
+	"AlbumAssetBackfillV2",
+	"PartnerAssetV1",
+	"PartnerAssetV2",
+	"PartnerAssetBackfillV1",
+	"PartnerAssetBackfillV2",
+}
+
+func shouldRewriteStreamType(streamType string) bool {
+	return slices.Contains(checksumRewriteStreamTypes, streamType)
+}
+
 func replaceBulkUploadCheck(w http.ResponseWriter, r *http.Request, logger *customLogger) error {
 	logger.SetErrPrefix("bulk-upload-check")
 	var err error
@@ -264,7 +283,7 @@ func (replacer Replacer) Replace() (err error) {
 			}
 			for _, value := range streams {
 				if v, ok := value.(map[string]any); ok {
-					if t, ok := v["type"].(string); ok && !slices.Contains([]string{"AssetV1", "AlbumAssetCreateV1", "AlbumAssetUpdateV1", "AlbumAssetBackfillV1", "PartnerAssetV1", "PartnerAssetBackfillV1"}, t) {
+					if t, ok := v["type"].(string); ok && !shouldRewriteStreamType(t) {
 						continue
 					}
 					if asset, ok := v["data"].(map[string]any); ok {

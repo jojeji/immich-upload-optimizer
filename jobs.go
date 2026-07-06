@@ -69,9 +69,10 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 		deviceAssetId = ids[0]
 	}
 	if deviceAssetId == "" {
-		// deviceAssetId is already removed in this PR
+		// deviceAssetId was removed by Immich v3.
 		// https://github.com/immich-app/immich/issues/27818
 		// and marked here to be removed: https://github.com/immich-app/immich/blob/b414b3d32b3952eb6f655d60b91240614be14acc/mobile/lib/services/foreground_upload.service.dart#L323
+		// Keep the filename fallback for this minimal migration.
 		// ToDo: Need to use an alternative, because file name only is not "secure" enough
 		jobLogger.Print(magenta("no deviceAssetId found in form data, using filename only as job key"))
 	}
