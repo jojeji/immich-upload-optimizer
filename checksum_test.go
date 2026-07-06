@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -45,6 +46,21 @@ func withUpstreamURL(t *testing.T, url string) {
 	t.Cleanup(func() {
 		upstreamURL = oldUpstreamURL
 	})
+}
+
+func withChecksumsFile(t *testing.T) string {
+	t.Helper()
+	file, err := os.CreateTemp(t.TempDir(), "checksums-*.csv")
+	if err != nil {
+		t.Fatalf("create temp checksums file: %v", err)
+	}
+	file.Close()
+	oldChecksumsFile := checksumsFile
+	checksumsFile = file.Name()
+	t.Cleanup(func() {
+		checksumsFile = oldChecksumsFile
+	})
+	return file.Name()
 }
 
 func newTestLogger() *customLogger {
@@ -212,5 +228,62 @@ func TestWebSocketUploadReadyAssetRewrite(t *testing.T) {
 	}
 	if got := asset["originalFileName"]; got != "ready.avif.jpg" {
 		t.Fatalf("expected websocket filename rewrite, got %v", got)
+	}
+}
+
+func TestImmediateChecksumRewriteUsesStagedMapping(t *testing.T) {
+	withChecksumMaps(t, map[string]string{}, map[string]string{})
+
+	pair := stageChecksumPair("fake-immediate", "orig-immediate")
+	t.Cleanup(pair.Rollback)
+
+	asset := Asset{"checksum": "fake-immediate"}
+	mapLock.RLock()
+	asset.toOriginalAsset()
+	mapLock.RUnlock()
+
+	if got := asset["checksum"]; got != "orig-immediate" {
+		t.Fatalf("expected staged mapping to be visible immediately, got %v", got)
+	}
+}
+
+func TestProvisionalChecksumPairPersistWritesOnce(t *testing.T) {
+	withChecksumMaps(t, map[string]string{}, map[string]string{})
+	path := withChecksumsFile(t)
+
+	pair := stageChecksumPair("fake-persist", "orig-persist")
+	if err := pair.Persist(); err != nil {
+		t.Fatalf("persist staged pair: %v", err)
+	}
+	if err := pair.Persist(); err != nil {
+		t.Fatalf("persist staged pair twice: %v", err)
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read checksums file: %v", err)
+	}
+	if got := string(content); got != "fake-persist,orig-persist\n" {
+		t.Fatalf("expected one persisted checksum pair, got %q", got)
+	}
+}
+
+func TestProvisionalChecksumPairRollbackRemovesMapping(t *testing.T) {
+	withChecksumMaps(t, map[string]string{}, map[string]string{})
+
+	pair := stageChecksumPair("fake-rollback", "orig-rollback")
+	pair.Rollback()
+
+	asset := Asset{"checksum": "fake-rollback"}
+	mapLock.RLock()
+	asset.toOriginalAsset()
+	_, hasOriginalToFake := originalToFakeChecksum["orig-rollback"]
+	mapLock.RUnlock()
+
+	if got := asset["checksum"]; got != "fake-rollback" {
+		t.Fatalf("expected rolled back mapping to be removed, got %v", got)
+	}
+	if hasOriginalToFake {
+		t.Fatal("expected rolled back original checksum entry to be removed")
 	}
 }
