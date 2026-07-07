@@ -256,12 +256,6 @@ func getChecksumReplacer(w http.ResponseWriter, r *http.Request, logger *customL
 	if isStreamSync(r) {
 		return &Replacer{w, r, logger, TypeStream}
 	}
-	if isFullSync(r) {
-		return &Replacer{w, r, logger, TypeFull}
-	}
-	if isDeltaSync(r) {
-		return &Replacer{w, r, logger, TypeDelta}
-	}
 	/*
 		Since immich server v1.133.1
 		- Albums don't come with assets on the web (?withoutAssets=true by default) but still do for the app
@@ -290,9 +284,6 @@ type Replacer struct {
 
 const (
 	TypeAlbum = iota
-	TypeDelta
-	TypeFull
-	TypeBucket
 	TypeAssetView
 	TypeStream
 )
@@ -318,7 +309,6 @@ func (replacer Replacer) Replace() (err error) {
 		return
 	}
 	if resp.StatusCode == http.StatusOK {
-		assetsKey := "assets"
 		switch replacer.typeId {
 		case TypeStream:
 			fixedJsonBuf := make([]byte, len(jsonBuf)+1)
@@ -349,16 +339,13 @@ func (replacer Replacer) Replace() (err error) {
 				jsonBuf[len(jsonBuf)-1] = '\n'
 			}
 			replaceAllBytes(jsonBuf, []byte("},{"), []byte("}\n{"))
-		case TypeDelta:
-			assetsKey = "upserted"
-			fallthrough
 		case TypeAlbum:
 			var assetsMap map[string]any
 			if err = json.Unmarshal(jsonBuf, &assetsMap); logger.Error(err, "json unmarshal") {
 				return
 			}
 			for key, value := range assetsMap {
-				if key != assetsKey {
+				if key != "assets" {
 					continue
 				}
 				if assets, ok := value.([]any); ok {
@@ -373,21 +360,6 @@ func (replacer Replacer) Replace() (err error) {
 				break
 			}
 			if jsonBuf, err = json.Marshal(assetsMap); logger.Error(err, "json marshal") {
-				return
-			}
-		case TypeBucket:
-			fallthrough
-		case TypeFull:
-			var assets []Asset
-			if err = json.Unmarshal(jsonBuf, &assets); logger.Error(err, "json unmarshal") {
-				return
-			}
-			mapLock.RLock()
-			for _, asset := range assets {
-				asset.toOriginalAsset()
-			}
-			mapLock.RUnlock()
-			if jsonBuf, err = json.Marshal(assets); logger.Error(err, "json marshal") {
 				return
 			}
 		case TypeAssetView:

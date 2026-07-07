@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"testing"
 
 	"github.com/fatih/color"
 	"github.com/spf13/viper"
@@ -44,6 +45,12 @@ var forceColors bool
 var config *Config
 
 func init() {
+	// Skip flag/config initialization under `go test`: the testing package registers
+	// its own flags (-test.v, -test.testlogfile, ...) after init() runs, so calling
+	// flag.Parse() here would fail on those with "flag provided but not defined".
+	if testing.Testing() {
+		return
+	}
 	viper.SetEnvPrefix("iuo")
 	viper.AutomaticEnv()
 	viper.BindEnv("upstream")

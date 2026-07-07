@@ -64,17 +64,26 @@ func handleWebSocketConn(cliConn, srvConn *websocket.Conn, logger *customLogger)
 				if err = json.Unmarshal(message[2:], &wsMsg); logger.Error(err, "json unmarshal") {
 					continue
 				}
+				action := wsMsg.getAction()
 				var asset Asset
-				switch wsMsg.getAction() {
+				switch action {
 				case "on_upload_success":
 					asset = wsMsg.getUploadSuccessAsset()
-				case "AssetUploadReadyV1":
+				case "AssetUploadReadyV1", "AssetUploadReadyV2", "AssetEditReadyV1", "AssetEditReadyV2":
+					// Immich v3 servers only emit the V2 variants; V1 is kept for older servers.
 					asset = wsMsg.getUploadReadyAsset()
 				}
 				if asset != nil {
+					before, _ := asset["checksum"].(string)
 					mapLock.RLock()
 					asset.toOriginalAsset()
 					mapLock.RUnlock()
+					after, _ := asset["checksum"].(string)
+					if before != after {
+						logger.Print(cyan("websocket %s: checksum rewritten %s -> %s", action, before, after))
+					} else {
+						logger.Print(cyan("websocket %s: no checksum mapping found for %s, forwarded as-is", action, before))
+					}
 					if message, err = json.Marshal(wsMsg); logger.Error(err, "json encode") {
 						continue
 					}
